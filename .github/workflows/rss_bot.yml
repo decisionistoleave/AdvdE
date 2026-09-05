@@ -49,8 +49,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FEED_URL: ${{ secrets.FEED_URL }}
-          MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN || 10 }}
-          INITIAL_POST_LIMIT: ${{ vars.INITIAL_POST_LIMIT || 5 }}
+          MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN || 20 }}
+          INITIAL_POST_LIMIT: ${{ vars.INITIAL_POST_LIMIT || 20 }}
         run: |
           ARGS=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
