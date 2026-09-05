@@ -10,6 +10,8 @@ Telegram RSS Bot with Telegram Rich Messages (Bot API 10.1+):
 - Serverless state tracking in data/history.json for GitHub Actions cron runs
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import json
@@ -19,6 +21,7 @@ import re
 import argparse
 import logging
 import socket
+from typing import Any, Dict, List, Optional
 _orig_getaddrinfo = socket.getaddrinfo
 
 
