@@ -1,0 +1,77 @@
+name: RSS to Telegram Bot
+
+on:
+  schedule:
+    # Runs every 30 minutes (UTC)
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run mode (logs actions without posting to Telegram)'
+        type: boolean
+        default: false
+        required: false
+      seed_only:
+        description: 'Seed only (populate history with current feed without posting)'
+        type: boolean
+        default: false
+        required: false
+
+concurrency:
+  group: rss-bot-run
+  cancel-in-progress: false
+
+jobs:
+  check-feed:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run RSS Bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FEED_URL: ${{ secrets.FEED_URL }}
+          MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN || 10 }}
+          INITIAL_POST_LIMIT: ${{ vars.INITIAL_POST_LIMIT || 5 }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ "${{ github.event.inputs.seed_only }}" = "true" ]; then
+            ARGS="$ARGS --seed-only"
+          fi
+          python bot.py $ARGS
+
+      - name: Commit and push updated history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if [ -n "$(git status --porcelain data/history.json)" ]; then
+            echo "Changes detected in data/history.json. Committing..."
+            git add data/history.json
+            git commit -m "Update RSS history [skip ci]"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push origin ${{ github.ref_name }}
+          else
+            echo "No new history updates to commit."
+          fi
