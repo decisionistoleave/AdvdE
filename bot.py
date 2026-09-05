@@ -84,6 +84,7 @@ INITIAL_POST_LIMIT = int(os.getenv("INITIAL_POST_LIMIT", "20"))
 MAX_HISTORY_SIZE = int(os.getenv("MAX_HISTORY_SIZE", "1000"))
 MAX_CAPS_IN_SLIDESHOW = int(os.getenv("MAX_CAPS_IN_SLIDESHOW", "6"))
 MAX_SCENE_CAPS = int(os.getenv("MAX_SCENE_CAPS", "4"))
+POST_DELAY_SECONDS = float(os.getenv("POST_DELAY_SECONDS", "5.0"))
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -390,8 +391,16 @@ class TelegramPublisher:
     """
 
     def __init__(self, token: str, chat_id: str):
-        self.token = token
-        self.chat_id = chat_id
+        self.token = str(token).strip().strip("'\"")
+        cid = str(chat_id).strip().strip("'\"")
+        # Automatically fix common chat_id formatting mistakes:
+        # e.g. -4355835192 -> -1004355835192 (supergroups/channels)
+        if cid.startswith("-") and not cid.startswith("-100"):
+            cid = f"-100{cid[1:]}"
+        # e.g. advdempire -> @advdempire
+        elif cid and not cid.startswith("-") and not cid.startswith("@") and not cid.isdigit():
+            cid = f"@{cid}"
+        self.chat_id = cid
         self.base_url = f"https://api.telegram.org/bot{self.token}"
 
     @staticmethod
@@ -740,7 +749,7 @@ def main():
             if success:
                 history.add(it["id"])
                 posted_count += 1
-                time.sleep(3.0)
+                time.sleep(POST_DELAY_SECONDS)
             else:
                 logger.warning(f"Could not dispatch item {it['id']}; skipping.")
 
