@@ -90,13 +90,10 @@ REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/122.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "X-Forwarded-For": "64.124.8.1",
-    "X-Real-IP": "64.124.8.1",
-    "CF-Connecting-IP": "64.124.8.1",
 }
 
 
@@ -108,10 +105,10 @@ class FeedScraper:
         self.session.headers.update(REQUEST_HEADERS)
         # Pre-seed age confirmation & verification cookies across all ADE domains
         for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
-            self.session.cookies.set("ageConfirmed", "true", domain=d)
-            self.session.cookies.set("ageVerified", "true", domain=d)
-            self.session.cookies.set("AgeVerification", "true", domain=d)
-            self.session.cookies.set("legalAge", "true", domain=d)
+            self.session.cookies.set("ageConfirmed", "true", domain=d, path="/")
+            self.session.cookies.set("ageVerified", "true", domain=d, path="/")
+            self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
+            self.session.cookies.set("legalAge", "true", domain=d, path="/")
 
     def fetch_feed(self, feed_url: str) -> str:
         """Fetches the MRSS feed and handles age verification handshake."""
@@ -124,28 +121,18 @@ class FeedScraper:
         logger.info(f"Connecting to feed provider: {feed_url}")
         
         for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
-            self.session.cookies.set("ageConfirmed", "true", domain=d)
-            self.session.cookies.set("ageVerified", "true", domain=d)
-            self.session.cookies.set("AgeVerification", "true", domain=d)
+            self.session.cookies.set("ageConfirmed", "true", domain=d, path="/")
+            self.session.cookies.set("ageVerified", "true", domain=d, path="/")
+            self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
+            self.session.cookies.set("legalAge", "true", domain=d, path="/")
 
         first_resp = self.session.get(feed_url, timeout=25)
         if "<item>" in first_resp.text:
             return first_resp.text
 
         logger.info(f"Handling age verification handshake (redirected to {first_resp.url})...")
-        
-        # 1. Post state-level AgeVerification form (Tennessee / Texas / Virginia gate)
-        try:
-            self.session.post(
-                "https://www.adultdvdempire.com/Account/AgeVerification",
-                data={"firstname": "Michael", "lastname": "Smith", "postalcode": "37201"},
-                headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
-                timeout=15
-            )
-        except Exception as e:
-            logger.warning(f"AgeVerification post notice: {e}")
 
-        # 2. Call AgeConfirmation handshake
+        # 1. Call AgeConfirmation handshake
         for confirm_url in [
             "https://www.adultdvdempire.com/Account/AgeConfirmation",
             "https://www.adultdvdempire.com/AgeConfirmation",
@@ -160,10 +147,22 @@ class FeedScraper:
             except Exception as e:
                 logger.warning(f"Handshake error at {confirm_url}: {e}")
 
+        # 2. Post state-level AgeVerification form if challenged
+        try:
+            self.session.post(
+                "https://www.adultdvdempire.com/Account/AgeVerification",
+                data={"firstname": "Michael", "lastname": "Smith", "postalcode": "37201"},
+                headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
+                timeout=15
+            )
+        except Exception as e:
+            logger.warning(f"AgeVerification post notice: {e}")
+
         for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
-            self.session.cookies.set("ageConfirmed", "true", domain=d)
-            self.session.cookies.set("ageVerified", "true", domain=d)
-            self.session.cookies.set("AgeVerification", "true", domain=d)
+            self.session.cookies.set("ageConfirmed", "true", domain=d, path="/")
+            self.session.cookies.set("ageVerified", "true", domain=d, path="/")
+            self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
+            self.session.cookies.set("legalAge", "true", domain=d, path="/")
 
         feed_resp = self.session.get(feed_url, timeout=25)
         feed_resp.raise_for_status()
