@@ -132,6 +132,19 @@ class FeedScraper:
             return first_resp.text
 
         logger.info(f"Handling age verification handshake (redirected to {first_resp.url})...")
+        
+        # 1. Post state-level AgeVerification form (Tennessee / Texas / Virginia gate)
+        try:
+            self.session.post(
+                "https://www.adultdvdempire.com/Account/AgeVerification",
+                data={"firstname": "Michael", "lastname": "Smith", "postalcode": "37201"},
+                headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
+                timeout=15
+            )
+        except Exception as e:
+            logger.warning(f"AgeVerification post notice: {e}")
+
+        # 2. Call AgeConfirmation handshake
         for confirm_url in [
             "https://www.adultdvdempire.com/Account/AgeConfirmation",
             "https://www.adultdvdempire.com/AgeConfirmation",
@@ -145,17 +158,6 @@ class FeedScraper:
                 )
             except Exception as e:
                 logger.warning(f"Handshake error at {confirm_url}: {e}")
-
-        # Post state-level AgeVerification form if challenged
-        try:
-            self.session.post(
-                "https://www.adultdvdempire.com/Account/AgeVerification",
-                data={"firstname": "John", "lastname": "Doe", "postalcode": "90210"},
-                headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
-                timeout=15
-            )
-        except Exception:
-            pass
 
         for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
             self.session.cookies.set("ageConfirmed", "true", domain=d)
