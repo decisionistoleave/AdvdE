@@ -67,10 +67,14 @@ load_dotenv()
 
 # Configuration
 DEFAULT_FEED_URL = "https://www.adultdvdempire.com/new-release-porn-videos.html?format=MRSS"
-FEED_URL = os.getenv("FEED_URL", "").strip() or DEFAULT_FEED_URL
-if "format=MRSS" not in FEED_URL:
-    delim = "&" if "?" in FEED_URL else "?"
-    FEED_URL = f"{FEED_URL}{delim}format=MRSS"
+raw_feed_url = os.getenv("FEED_URL", "").strip()
+if not raw_feed_url or not raw_feed_url.startswith("http") or "adultdvdempire.com" not in raw_feed_url:
+    FEED_URL = DEFAULT_FEED_URL
+else:
+    FEED_URL = raw_feed_url
+    if "format=MRSS" not in FEED_URL:
+        delim = "&" if "?" in FEED_URL else "?"
+        FEED_URL = f"{FEED_URL}{delim}format=MRSS"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -98,36 +102,57 @@ class FeedScraper:
     def __init__(self, session: Optional[requests.Session] = None):
         self.session = session or requests.Session()
         self.session.headers.update(REQUEST_HEADERS)
+        # Pre-seed age confirmation cookies on session
+        self.session.cookies.set("ageConfirmed", "true", domain=".adultdvdempire.com")
+        self.session.cookies.set("ageConfirmed", "true", domain="www.adultdvdempire.com")
 
     def fetch_feed(self, feed_url: str) -> str:
         """Fetches the MRSS feed and handles age verification handshake."""
-        if not feed_url:
+        if not feed_url or not feed_url.startswith("http"):
             feed_url = DEFAULT_FEED_URL
         if "format=MRSS" not in feed_url:
             delim = "&" if "?" in feed_url else "?"
             feed_url = f"{feed_url}{delim}format=MRSS"
 
         logger.info(f"Connecting to feed provider: {feed_url}")
-        first_resp = self.session.get(feed_url, timeout=20)
         
-        if "AgeConfirmation" in first_resp.url or "ageConfirmationClicked" in first_resp.text or "<item>" not in first_resp.text:
-            logger.info("Handling age verification handshake...")
-            confirm_url = "https://www.adultdvdempire.com/Account/AgeConfirmation"
-            headers = {"X-Requested-With": "XMLHttpRequest"}
-            self.session.get(
-                confirm_url,
-                params={"ageConfirmationClicked": "true"},
-                headers=headers,
-                timeout=20
-            )
-            feed_resp = self.session.get(feed_url, timeout=20)
-            feed_resp.raise_for_status()
-            if "<item>" not in feed_resp.text:
-                logger.warning(f"Feed response missing <item> tags (length: {len(feed_resp.text)}). First 250 chars: {feed_resp.text[:250]}")
-            return feed_resp.text
+        # Ensure age confirmation cookies are set
+        self.session.cookies.set("ageConfirmed", "true", domain=".adultdvdempire.com")
+        self.session.cookies.set("ageConfirmed", "true", domain="www.adultdvdempire.com")
 
-        first_resp.raise_for_status()
-        return first_resp.text
+        first_resp = self.session.get(feed_url, timeout=25)
+        if "<item>" in first_resp.text:
+            return first_resp.text
+
+        logger.info("Handling age verification handshake...")
+        for confirm_url in [
+            "https://www.adultdvdempire.com/Account/AgeConfirmation",
+            "https://www.adultdvdempire.com/AgeConfirmation",
+        ]:
+            try:
+                self.session.get(
+                    confirm_url,
+                    params={"ageConfirmationClicked": "true"},
+                    headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
+                    timeout=15
+                )
+            except Exception as e:
+                logger.warning(f"Handshake error at {confirm_url}: {e}")
+
+        self.session.cookies.set("ageConfirmed", "true", domain=".adultdvdempire.com")
+        self.session.cookies.set("ageConfirmed", "true", domain="www.adultdvdempire.com")
+
+        feed_resp = self.session.get(feed_url, timeout=25)
+        feed_resp.raise_for_status()
+
+        if "<item>" not in feed_resp.text:
+            title_m = re.search(r"<title>(.*?)</title>", feed_resp.text, re.I)
+            page_title = title_m.group(1).strip() if title_m else "No Title"
+            logger.warning(
+                f"Feed response missing <item> tags. Title: '{page_title}', URL: {feed_resp.url}, Length: {len(feed_resp.text)}"
+            )
+
+        return feed_resp.text
 
     @staticmethod
     def parse_feed_items(feed_xml: str) -> List[Dict[str, Any]]:
