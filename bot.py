@@ -757,8 +757,20 @@ def main():
         history.save()
         return
 
+    feed_ids = [it["id"] for it in items]
+    history_ids = set(history.history)
     new_items = [it for it in items if not history.is_seen(it["id"])]
-    logger.info(f"Found {len(new_items)} new unposted items.")
+    new_ids = [it["id"] for it in new_items]
+
+    logger.info(f"Code comparison: {len(feed_ids)} total feed codes vs {len(history_ids)} history codes.")
+    logger.info(f"History codes sample (recent): {history.history[-10:] if history.history else []}")
+
+    if new_ids:
+        logger.info(f"New codes detected ({len(new_ids)}): {new_ids}")
+        for it in new_items:
+            logger.info(f"  [NEW CODE] ID: {it['id']} | Title: {it['title']} | Released: {it.get('pub_date')}")
+    else:
+        logger.info("No new codes found compared to history.")
 
     if not new_items:
         logger.info("All feed items already processed.")
