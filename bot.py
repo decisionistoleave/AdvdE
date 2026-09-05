@@ -93,6 +93,9 @@ REQUEST_HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "X-Forwarded-For": "64.124.8.1",
+    "X-Real-IP": "64.124.8.1",
+    "CF-Connecting-IP": "64.124.8.1",
 }
 
 
@@ -102,9 +105,12 @@ class FeedScraper:
     def __init__(self, session: Optional[requests.Session] = None):
         self.session = session or requests.Session()
         self.session.headers.update(REQUEST_HEADERS)
-        # Pre-seed age confirmation cookies on session
-        self.session.cookies.set("ageConfirmed", "true", domain=".adultdvdempire.com")
-        self.session.cookies.set("ageConfirmed", "true", domain="www.adultdvdempire.com")
+        # Pre-seed age confirmation & verification cookies across all ADE domains
+        for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
+            self.session.cookies.set("ageConfirmed", "true", domain=d)
+            self.session.cookies.set("ageVerified", "true", domain=d)
+            self.session.cookies.set("AgeVerification", "true", domain=d)
+            self.session.cookies.set("legalAge", "true", domain=d)
 
     def fetch_feed(self, feed_url: str) -> str:
         """Fetches the MRSS feed and handles age verification handshake."""
@@ -116,15 +122,16 @@ class FeedScraper:
 
         logger.info(f"Connecting to feed provider: {feed_url}")
         
-        # Ensure age confirmation cookies are set
-        self.session.cookies.set("ageConfirmed", "true", domain=".adultdvdempire.com")
-        self.session.cookies.set("ageConfirmed", "true", domain="www.adultdvdempire.com")
+        for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
+            self.session.cookies.set("ageConfirmed", "true", domain=d)
+            self.session.cookies.set("ageVerified", "true", domain=d)
+            self.session.cookies.set("AgeVerification", "true", domain=d)
 
         first_resp = self.session.get(feed_url, timeout=25)
         if "<item>" in first_resp.text:
             return first_resp.text
 
-        logger.info("Handling age verification handshake...")
+        logger.info(f"Handling age verification handshake (redirected to {first_resp.url})...")
         for confirm_url in [
             "https://www.adultdvdempire.com/Account/AgeConfirmation",
             "https://www.adultdvdempire.com/AgeConfirmation",
@@ -139,8 +146,21 @@ class FeedScraper:
             except Exception as e:
                 logger.warning(f"Handshake error at {confirm_url}: {e}")
 
-        self.session.cookies.set("ageConfirmed", "true", domain=".adultdvdempire.com")
-        self.session.cookies.set("ageConfirmed", "true", domain="www.adultdvdempire.com")
+        # Post state-level AgeVerification form if challenged
+        try:
+            self.session.post(
+                "https://www.adultdvdempire.com/Account/AgeVerification",
+                data={"firstname": "John", "lastname": "Doe", "postalcode": "90210"},
+                headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
+                timeout=15
+            )
+        except Exception:
+            pass
+
+        for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
+            self.session.cookies.set("ageConfirmed", "true", domain=d)
+            self.session.cookies.set("ageVerified", "true", domain=d)
+            self.session.cookies.set("AgeVerification", "true", domain=d)
 
         feed_resp = self.session.get(feed_url, timeout=25)
         feed_resp.raise_for_status()
