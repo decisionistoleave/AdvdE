@@ -67,7 +67,11 @@ load_dotenv()
 
 # Configuration
 DEFAULT_FEED_URL = "https://www.adultdvdempire.com/new-release-porn-videos.html?format=MRSS"
-FEED_URL = os.getenv("FEED_URL", DEFAULT_FEED_URL)
+FEED_URL = os.getenv("FEED_URL", "").strip() or DEFAULT_FEED_URL
+if "format=MRSS" not in FEED_URL:
+    delim = "&" if "?" in FEED_URL else "?"
+    FEED_URL = f"{FEED_URL}{delim}format=MRSS"
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 HISTORY_FILE = os.getenv("HISTORY_FILE", "data/history.json")
@@ -97,10 +101,16 @@ class FeedScraper:
 
     def fetch_feed(self, feed_url: str) -> str:
         """Fetches the MRSS feed and handles age verification handshake."""
+        if not feed_url:
+            feed_url = DEFAULT_FEED_URL
+        if "format=MRSS" not in feed_url:
+            delim = "&" if "?" in feed_url else "?"
+            feed_url = f"{feed_url}{delim}format=MRSS"
+
         logger.info(f"Connecting to feed provider: {feed_url}")
         first_resp = self.session.get(feed_url, timeout=20)
         
-        if "AgeConfirmation" in first_resp.url or "ageConfirmationClicked" in first_resp.text:
+        if "AgeConfirmation" in first_resp.url or "ageConfirmationClicked" in first_resp.text or "<item>" not in first_resp.text:
             logger.info("Handling age verification handshake...")
             confirm_url = "https://www.adultdvdempire.com/Account/AgeConfirmation"
             headers = {"X-Requested-With": "XMLHttpRequest"}
@@ -112,6 +122,8 @@ class FeedScraper:
             )
             feed_resp = self.session.get(feed_url, timeout=20)
             feed_resp.raise_for_status()
+            if "<item>" not in feed_resp.text:
+                logger.warning(f"Feed response missing <item> tags (length: {len(feed_resp.text)}). First 250 chars: {feed_resp.text[:250]}")
             return feed_resp.text
 
         first_resp.raise_for_status()
