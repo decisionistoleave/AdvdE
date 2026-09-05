@@ -65,6 +65,14 @@ def load_dotenv(filepath: str = ".env") -> None:
 
 load_dotenv()
 
+
+def format_title(title: str) -> str:
+    """Format title ensuring a single space before parentheses e.g. 'Mrs. Creampie Vol. 9(2026)' -> 'Mrs. Creampie Vol. 9 (2026)'."""
+    if not title:
+        return ""
+    formatted = re.sub(r"(\S)\(", r"\1 (", str(title))
+    return re.sub(r"\s+\(", " (", formatted).strip()
+
 # Configuration
 DEFAULT_FEED_URL = "https://www.adultdvdempire.com/new-release-porn-videos.html?format=MRSS"
 raw_feed_url = os.getenv("FEED_URL", "").strip()
@@ -188,6 +196,8 @@ class FeedScraper:
             
             title_match = re.search(r"<title>(.*?)</title>", raw, re.DOTALL)
             title = html.unescape(title_match.group(1).strip()) if title_match else ""
+            if title:
+                title = format_title(title)
             
             link_match = re.search(r"<link>(.*?)</link>", raw, re.DOTALL)
             link = link_match.group(1).strip() if link_match else ""
@@ -262,27 +272,41 @@ class FeedScraper:
 
             # 1. Primary: match clip links and extract per-scene cast from the scene row
             for a_clip in soup.find_all("a", href=re.compile(r"/clip/(\d+)/")):
-                sid_match = re.search(r"/clip/(\d+)/", a_clip.get("href", ""))
+                href = a_clip.get("href", "").strip()
+                sid_match = re.search(r"/clip/(\d+)/", href)
                 if not sid_match:
                     continue
                 sid = sid_match.group(1)
-                stitle = a_clip.get_text(strip=True) or "Scene"
+
+                clip_url = (
+                    href
+                    if href.startswith("http")
+                    else (
+                        f"https://www.adultdvdempire.com{href}"
+                        if href.startswith("/")
+                        else f"https://www.adultdvdempire.com/{href}"
+                    )
+                )
+
+                raw_text = a_clip.get_text(strip=True)
+                is_dur = bool(re.match(r"^(?:\d+K\s*UHD\s*)?\d+\s*min$", raw_text, re.IGNORECASE))
+                stitle = raw_text if (raw_text and not is_dur) else ""
+
                 row = a_clip.find_parent("div", class_="row")
                 sc_cast: List[str] = []
                 if row:
                     for ca in row.find_all("a"):
-                        href = ca.get("href", "")
-                        if "/porn-videos/" in href and "-pornstars.html" in href:
+                        ca_href = ca.get("href", "")
+                        if "/porn-videos/" in ca_href and "-pornstars.html" in ca_href:
                             name = ca.get_text(strip=True)
                             if name and name not in sc_cast:
                                 sc_cast.append(name)
 
-                anchor_url = f"{url}#scene_{sid}"
                 if sid not in scene_map:
                     scene_map[sid] = {
                         "id": sid,
-                        "title": stitle,
-                        "url": anchor_url,
+                        "title": stitle or "Scene",
+                        "url": clip_url,
                         "cast": sc_cast,
                         "caps": []
                     }
@@ -290,8 +314,13 @@ class FeedScraper:
                 else:
                     if sc_cast and not scene_map[sid]["cast"]:
                         scene_map[sid]["cast"] = sc_cast
-                    if stitle and scene_map[sid]["title"] in ["Scene", ""]:
+                    if stitle and (
+                        scene_map[sid]["title"] in ["Scene", ""]
+                        or re.match(r"^(?:\d+K\s*UHD\s*)?\d+\s*min$", scene_map[sid]["title"], re.IGNORECASE)
+                    ):
                         scene_map[sid]["title"] = stitle
+                    if clip_url and not scene_map[sid].get("url", "").startswith("https://www.adultdvdempire.com/clip/"):
+                        scene_map[sid]["url"] = clip_url
 
             # 2. Fallback / supplement: find any div_scenePreview_<id> modals
             for sp in soup.find_all(id=re.compile(r"^div_scenePreview_(\d+)")):
@@ -301,12 +330,25 @@ class FeedScraper:
                 sid = sid_match.group(0)
                 if sid not in scene_map:
                     hdr = sp.find(["h2", "h3", "h4", "h5"])
-                    stitle = hdr.get_text(strip=True) if hdr else f"Scene"
-                    anchor_url = f"{url}#scene_{sid}"
+                    stitle = hdr.get_text(strip=True) if hdr else "Scene"
+                    sp_clip = sp.find("a", href=re.compile(r"/clip/"))
+                    if sp_clip:
+                        sp_href = sp_clip.get("href", "").strip()
+                        clip_url = (
+                            sp_href
+                            if sp_href.startswith("http")
+                            else (
+                                f"https://www.adultdvdempire.com{sp_href}"
+                                if sp_href.startswith("/")
+                                else f"https://www.adultdvdempire.com/{sp_href}"
+                            )
+                        )
+                    else:
+                        clip_url = f"https://www.adultdvdempire.com/clip/{sid}/scene-{len(scene_order) + 1}-streaming-scene.html"
                     scene_map[sid] = {
                         "id": sid,
                         "title": stitle,
-                        "url": anchor_url,
+                        "url": clip_url,
                         "cast": [],
                         "caps": []
                     }
@@ -418,7 +460,7 @@ class TelegramPublisher:
         - <details><summary>...</summary>...</details> for each scene with its own <tg-collage>
         - <tg-button> for inline interactive buttons
         """
-        title = self.esc(item.get("title", "New Release"))
+        title = self.esc(format_title(item.get("title", "New Release")))
         link = self.esc(item.get("link", ""))
         studio = self.esc(item.get("studio"))
         date = self.esc(item.get("pub_date"))
@@ -477,7 +519,12 @@ class TelegramPublisher:
                 else:
                     display_title = sc_title
 
-                parts.append(f'<p><a href="{sc_url}"><b>Scene {idx}: {display_title}</b></a></p>')
+                if display_title.lower() in [f"scene {idx}".lower(), f"scene{idx}".lower(), "scene"]:
+                    scene_label = f"Scene {idx}"
+                else:
+                    scene_label = f"Scene {idx}: {display_title}"
+
+                parts.append(f'<p><a href="{sc_url}"><b>{scene_label}</b></a></p>')
 
                 # Collapsible section to hide starring cast and thumbnails
                 even_caps = [sc_caps[i] for i in [1, 3, 5, 7] if i < len(sc_caps)] or sc_caps[1::2] or sc_caps
@@ -499,7 +546,7 @@ class TelegramPublisher:
 
     def build_standard_caption(self, item: Dict[str, Any]) -> str:
         """Fallback caption formatted for sendMediaGroup / sendPhoto / sendMessage."""
-        title = self.esc(item.get("title", "New Release"))
+        title = self.esc(format_title(item.get("title", "New Release")))
         link = self.esc(item.get("link", ""))
         studio = self.esc(item.get("studio"))
         date = self.esc(item.get("pub_date"))
@@ -532,7 +579,12 @@ class TelegramPublisher:
                 else:
                     display_title = sc_title
 
-                scene_lines.append(f'<a href="{sc_url}"><b>Scene {idx}: {display_title}</b></a>')
+                if display_title.lower() in [f"scene {idx}".lower(), f"scene{idx}".lower(), "scene"]:
+                    scene_label = f"Scene {idx}"
+                else:
+                    scene_label = f"Scene {idx}: {display_title}"
+
+                scene_lines.append(f'<a href="{sc_url}"><b>{scene_label}</b></a>')
                 if sc_cast_str and not is_generic:
                     scene_lines.append(f"<b>Starring:</b> {sc_cast_str}")
 
@@ -545,7 +597,11 @@ class TelegramPublisher:
         for idx, sc in enumerate(scenes[:4], 1):
             sc_title = self.esc(sc["title"])
             sc_url = self.esc(sc["url"])
-            compact_lines.append(f'<a href="{sc_url}"><b>Scene {idx}: {sc_title}</b></a>')
+            if sc_title.lower() in [f"scene {idx}".lower(), f"scene{idx}".lower(), "scene"]:
+                c_label = f"Scene {idx}"
+            else:
+                c_label = f"Scene {idx}: {sc_title}"
+            compact_lines.append(f'<a href="{sc_url}"><b>{c_label}</b></a>')
         caption = "\n".join(header + [""] + compact_lines)
         if len(caption) <= 1024:
             return caption
