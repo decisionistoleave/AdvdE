@@ -115,7 +115,7 @@ class FeedScraper:
             return feed_resp.text
 
         first_resp.raise_for_status()
-        return feed_resp.text
+        return first_resp.text
 
     @staticmethod
     def parse_feed_items(feed_xml: str) -> List[Dict[str, Any]]:
