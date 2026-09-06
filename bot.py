@@ -108,18 +108,52 @@ REQUEST_HEADERS = {
 class FeedScraper:
     """Handles session negotiation, feed parsing, and detail enrichment."""
 
+    AGE_COOKIE_DOMAINS = [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]
+
     def __init__(self, session: Optional[requests.Session] = None):
         self.session = session or requests.Session()
         self.session.headers.update(REQUEST_HEADERS)
-        # Pre-seed age confirmation & verification cookies across all ADE domains
-        for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
+        self._seed_age_cookies()
+        # Pre-authenticate via AJAX handshake to obtain server-validated etoken and ageConfirmed cookies
+        self._perform_age_handshake()
+
+    def _seed_age_cookies(self) -> None:
+        """Pre-seed age confirmation & verification cookies across all ADE domains."""
+        for d in self.AGE_COOKIE_DOMAINS:
             self.session.cookies.set("ageConfirmed", "true", domain=d, path="/")
             self.session.cookies.set("ageVerified", "true", domain=d, path="/")
             self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
             self.session.cookies.set("legalAge", "true", domain=d, path="/")
 
+    def _perform_age_handshake(self, redirect_url: str = "https://www.adultdvdempire.com/") -> None:
+        """
+        Performs the age confirmation AJAX handshake matching the site's SiteWide.js:
+          $.ajax({ url: "Account/AgeConfirmation", data: { ageConfirmationClicked: true } })
+        This sets the server-validated 'ageConfirmed' and session 'etoken' cookies.
+        """
+        confirm_url = "https://www.adultdvdempire.com/Account/AgeConfirmation"
+        try:
+            resp = self.session.get(
+                confirm_url,
+                params={"ageConfirmationClicked": "true"},
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": redirect_url,
+                },
+                timeout=15,
+            )
+            logger.info(f"AgeConfirmation handshake: status={resp.status_code}")
+        except Exception as e:
+            logger.warning(f"AgeConfirmation handshake error: {e}")
+
+        # Re-seed cookies across all domains
+        self._seed_age_cookies()
+
     def fetch_feed(self, feed_url: str) -> str:
-        """Fetches the MRSS feed and handles age verification handshake."""
+        """
+        Fetches the MRSS feed with automatic age verification handshake.
+        Uses up to 3 attempts: initial request, then handshake + retry if redirected.
+        """
         if not feed_url or not feed_url.startswith("http"):
             feed_url = DEFAULT_FEED_URL
         if "format=MRSS" not in feed_url:
@@ -127,62 +161,48 @@ class FeedScraper:
             feed_url = f"{feed_url}{delim}format=MRSS"
 
         logger.info(f"Connecting to feed provider: {feed_url}")
-        
-        for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
-            self.session.cookies.set("ageConfirmed", "true", domain=d, path="/")
-            self.session.cookies.set("ageVerified", "true", domain=d, path="/")
-            self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
-            self.session.cookies.set("legalAge", "true", domain=d, path="/")
+        self._seed_age_cookies()
 
-        first_resp = self.session.get(feed_url, timeout=25)
-        if "<item>" in first_resp.text:
-            return first_resp.text
+        max_attempts = 3
+        last_resp = None
 
-        logger.info(f"Handling age verification handshake (redirected to {first_resp.url})...")
-
-        # 1. Call AgeConfirmation handshake
-        for confirm_url in [
-            "https://www.adultdvdempire.com/Account/AgeConfirmation",
-            "https://www.adultdvdempire.com/AgeConfirmation",
-        ]:
+        for attempt in range(1, max_attempts + 1):
             try:
-                self.session.get(
-                    confirm_url,
-                    params={"ageConfirmationClicked": "true"},
-                    headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
-                    timeout=15
-                )
+                resp = self.session.get(feed_url, timeout=30)
+                resp.raise_for_status()
             except Exception as e:
-                logger.warning(f"Handshake error at {confirm_url}: {e}")
+                logger.warning(f"Feed fetch attempt {attempt}/{max_attempts} failed: {e}")
+                if attempt == max_attempts:
+                    raise
+                time.sleep(2)
+                continue
 
-        # 2. Post state-level AgeVerification form if challenged
-        try:
-            self.session.post(
-                "https://www.adultdvdempire.com/Account/AgeVerification",
-                data={"firstname": "Michael", "lastname": "Smith", "postalcode": "37201"},
-                headers={"X-Requested-With": "XMLHttpRequest", "Referer": first_resp.url},
-                timeout=15
-            )
-        except Exception as e:
-            logger.warning(f"AgeVerification post notice: {e}")
+            if "<item>" in resp.text:
+                if attempt > 1:
+                    logger.info(f"Feed retrieved successfully on attempt {attempt}.")
+                return resp.text
 
-        for d in [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]:
-            self.session.cookies.set("ageConfirmed", "true", domain=d, path="/")
-            self.session.cookies.set("ageVerified", "true", domain=d, path="/")
-            self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
-            self.session.cookies.set("legalAge", "true", domain=d, path="/")
+            last_resp = resp
 
-        feed_resp = self.session.get(feed_url, timeout=25)
-        feed_resp.raise_for_status()
+            if attempt < max_attempts:
+                logger.info(
+                    f"Attempt {attempt}/{max_attempts}: No <item> tags found "
+                    f"(redirected to {resp.url}). Performing age handshake..."
+                )
+                self._perform_age_handshake(resp.url)
+                time.sleep(1)
 
-        if "<item>" not in feed_resp.text:
-            title_m = re.search(r"<title>(.*?)</title>", feed_resp.text, re.I)
+        # All attempts exhausted — return last response with warning
+        if last_resp is not None:
+            title_m = re.search(r"<title>(.*?)</title>", last_resp.text, re.I)
             page_title = title_m.group(1).strip() if title_m else "No Title"
             logger.warning(
-                f"Feed response missing <item> tags. Title: '{page_title}', URL: {feed_resp.url}, Length: {len(feed_resp.text)}"
+                f"Feed response missing <item> tags after {max_attempts} attempts. "
+                f"Title: '{page_title}', URL: {last_resp.url}, Length: {len(last_resp.text)}"
             )
+            return last_resp.text
 
-        return feed_resp.text
+        raise RuntimeError(f"Failed to fetch feed after {max_attempts} attempts")
 
     @staticmethod
     def parse_feed_items(feed_xml: str) -> List[Dict[str, Any]]:
