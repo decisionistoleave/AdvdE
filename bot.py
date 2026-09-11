@@ -105,11 +105,14 @@ REQUEST_HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "X-Forwarded-For": "64.124.8.1",
+    "X-Real-IP": "64.124.8.1",
+    "CF-Connecting-IP": "64.124.8.1",
 }
 
 
 class FeedScraper:
-    """Handles session negotiation, feed parsing, proxy fallbacks, and detail enrichment."""
+    """Handles session negotiation, feed parsing, and detail enrichment."""
 
     AGE_COOKIE_DOMAINS = [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]
 
@@ -117,11 +120,9 @@ class FeedScraper:
         self.session = session or requests.Session()
         self.session.headers.update(REQUEST_HEADERS)
         self._seed_age_cookies()
-        self.fallback_proxy = os.getenv("PROXY_URL", "").strip() or os.getenv("TOR_PROXY", "").strip()
-        self._using_proxy = False
-
-        if self.fallback_proxy and os.getenv("FORCE_PROXY", "").lower() in ("1", "true", "yes"):
-            self._apply_proxy(self.fallback_proxy)
+        self.proxy_url = os.getenv("PROXY_URL", "").strip() or os.getenv("HTTPS_PROXY", "").strip()
+        if self.proxy_url:
+            self._apply_proxy(self.proxy_url)
 
     def _seed_age_cookies(self) -> None:
         """Pre-seed age confirmation & verification cookies across all ADE domains."""
@@ -131,21 +132,12 @@ class FeedScraper:
             self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
             self.session.cookies.set("legalAge", "true", domain=d, path="/")
 
-    def _detect_tor_proxy(self) -> Optional[str]:
-        """Check if a local Tor SOCKS5 proxy service is listening on 127.0.0.1:9050."""
-        try:
-            with socket.create_connection(("127.0.0.1", 9050), timeout=0.5):
-                return "socks5h://127.0.0.1:9050"
-        except Exception:
-            return None
-
     def _apply_proxy(self, proxy_url: str) -> None:
-        """Configures the requests session to route all traffic through the given proxy."""
+        """Configures the requests session to route traffic through the given proxy."""
         self.session.proxies.update({
             "http": proxy_url,
             "https": proxy_url,
         })
-        self._using_proxy = True
         logger.info(f"Enabled proxy routing: {proxy_url}")
 
     def _perform_age_handshake(self, redirect_url: str = "https://www.adultdvdempire.com/") -> None:
@@ -192,12 +184,11 @@ class FeedScraper:
 
     def fetch_feed(self, feed_url: str) -> str:
         """
-        Fetches the MRSS feed with automatic age verification handshake and proxy fallback.
+        Fetches the MRSS feed with automatic age verification handshake.
         1. Pre-seeds age verification cookies.
-        2. Connects with IPv4 forced and separate connect/read timeouts.
-        3. If direct connection fails (e.g. Azure datacenter IP block), automatically
-           falls back to Tor/configured proxy and retries.
-        4. If redirected to age verification gate, performs handshake.
+        2. Connects with IPv4 forced and California geo headers (X-Forwarded-For)
+           to bypass state-level digital ID gates.
+        3. If challenged by age verification gate, performs handshake and retries.
         """
         if not feed_url or not feed_url.startswith("http"):
             feed_url = DEFAULT_FEED_URL
@@ -210,30 +201,12 @@ class FeedScraper:
 
         max_attempts = 3
         last_resp = None
-        proxy_attempted = self._using_proxy
 
         for attempt in range(1, max_attempts + 1):
             try:
                 # 10s connect timeout, 25s read timeout
                 resp = self.session.get(feed_url, timeout=(10, 25))
                 resp.raise_for_status()
-            except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as e:
-                logger.warning(f"Feed fetch attempt {attempt}/{max_attempts} connection error: {e}")
-                
-                # Check for available fallback proxy (Tor or custom proxy)
-                if not proxy_attempted:
-                    proxy_candidate = self.fallback_proxy or self._detect_tor_proxy()
-                    if proxy_candidate:
-                        logger.info(f"Direct connection failed. Switching to fallback proxy: {proxy_candidate}")
-                        self._apply_proxy(proxy_candidate)
-                        proxy_attempted = True
-                        time.sleep(1)
-                        continue
-
-                if attempt == max_attempts:
-                    raise
-                time.sleep(2)
-                continue
             except Exception as e:
                 logger.warning(f"Feed fetch attempt {attempt}/{max_attempts} failed: {e}")
                 if attempt == max_attempts:
@@ -242,8 +215,8 @@ class FeedScraper:
                 continue
 
             if "<item>" in resp.text:
-                if attempt > 1 or self._using_proxy:
-                    logger.info(f"Feed retrieved successfully on attempt {attempt} (proxy={self._using_proxy}).")
+                if attempt > 1:
+                    logger.info(f"Feed retrieved successfully on attempt {attempt}.")
                 return resp.text
 
             last_resp = resp
@@ -254,12 +227,6 @@ class FeedScraper:
                     f"(redirected to {resp.url}). Performing age handshake..."
                 )
                 self._perform_age_handshake(resp.url)
-                if not proxy_attempted:
-                    proxy_candidate = self.fallback_proxy or self._detect_tor_proxy()
-                    if proxy_candidate:
-                        logger.info(f"Switching to proxy after age challenge: {proxy_candidate}")
-                        self._apply_proxy(proxy_candidate)
-                        proxy_attempted = True
                 time.sleep(1)
 
         # All attempts exhausted — return last response with warning
