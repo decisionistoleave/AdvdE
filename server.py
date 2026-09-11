@@ -141,7 +141,7 @@ class FeedCache:
                 desc_parts.append(f'<p><strong>Released:</strong> {pub_date}</p>')
             if scenes:
                 desc_parts.append('<p><strong>Scenes:</strong></p><ul>')
-                for idx, sc in enumerate(scenes[:4], 1):
+                for idx, sc in enumerate(scenes, 1):
                     s_title = html.escape(sc.get("title", f"Scene {idx}"))
                     s_url = html.escape(sc.get("url", link))
                     if s_title.lower() in [f"scene {idx}".lower(), f"scene{idx}".lower(), "scene"]:
@@ -180,7 +180,7 @@ class FeedCache:
                 lines.append('      </media:content>')
 
             # Add scene screenshots if available
-            for sc in scenes[:4]:
+            for sc in scenes:
                 for cap in sc.get("caps", [])[:4]:
                     c_esc = xml_escape(cap)
                     lines.append(f'      <media:content url="{c_esc}" medium="image" type="image/jpeg" />')

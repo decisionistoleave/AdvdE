@@ -557,9 +557,9 @@ class TelegramPublisher:
         if meta_lines:
             parts.append(f"<p>{'<br/>'.join(meta_lines)}</p>")
 
-        # 4. Scenes 1 to 4 with clickable direct scene title, starring cast, and photo slideshow
+        # 4. Scenes with clickable direct scene title, starring cast, and photo slideshow
         if scenes:
-            for idx, sc in enumerate(scenes[:4], 1):
+            for idx, sc in enumerate(scenes, 1):
                 sc_title = self.esc(sc["title"])
                 sc_url = self.esc(sc["url"])
                 sc_caps = sc.get("caps", [])
@@ -620,7 +620,7 @@ class TelegramPublisher:
         scene_lines = []
         if scenes:
             scene_lines.append("")
-            for idx, sc in enumerate(scenes[:4], 1):
+            for idx, sc in enumerate(scenes, 1):
                 sc_title = self.esc(sc["title"])
                 sc_url = self.esc(sc["url"])
                 sc_cast = sc.get("cast", [])
@@ -649,9 +649,9 @@ class TelegramPublisher:
         if len(caption) <= 1024:
             return caption
 
-        # If caption exceeds 1024, omit starring lines to ensure ALL 4 scenes are preserved
+        # If caption exceeds 1024, omit starring lines to ensure ALL scenes are preserved
         compact_lines = []
-        for idx, sc in enumerate(scenes[:4], 1):
+        for idx, sc in enumerate(scenes, 1):
             sc_title = self.esc(sc["title"])
             sc_url = self.esc(sc["url"])
             if sc_title.lower() in [f"scene {idx}".lower(), f"scene{idx}".lower(), "scene"]:
