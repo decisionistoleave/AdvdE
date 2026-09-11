@@ -69,6 +69,7 @@ jobs:
           INITIAL_POST_LIMIT: ${{ vars.INITIAL_POST_LIMIT || 20 }}
           TOR_PROXY: socks5h://127.0.0.1:9050
           PROXY_URL: ${{ secrets.PROXY_URL }}
+          FORCE_PROXY: "true"
         run: |
           ARGS=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then

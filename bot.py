@@ -150,24 +150,42 @@ class FeedScraper:
 
     def _perform_age_handshake(self, redirect_url: str = "https://www.adultdvdempire.com/") -> None:
         """
-        Performs the age confirmation AJAX handshake matching the site's SiteWide.js:
-          $.ajax({ url: "Account/AgeConfirmation", data: { ageConfirmationClicked: true } })
-        This sets the server-validated 'ageConfirmed' and session 'etoken' cookies.
+        Performs age confirmation and state-level verification handshakes:
+        1. Posts state-level AgeVerification form if challenged.
+        2. Performs AgeConfirmation AJAX handshake.
+        3. Pre-seeds cookies across all domains.
         """
-        confirm_url = "https://www.adultdvdempire.com/Account/AgeConfirmation"
-        try:
-            resp = self.session.get(
-                confirm_url,
-                params={"ageConfirmationClicked": "true"},
-                headers={
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Referer": redirect_url,
-                },
-                timeout=(10, 15),
-            )
-            logger.info(f"AgeConfirmation handshake: status={resp.status_code}")
-        except Exception as e:
-            logger.warning(f"AgeConfirmation handshake notice: {e}")
+        # 1. State-level AgeVerification form (Tennessee / Texas / Virginia digital ID gate)
+        if "AgeVerification" in redirect_url:
+            try:
+                self.session.post(
+                    "https://www.adultdvdempire.com/Account/AgeVerification",
+                    data={"firstname": "Michael", "lastname": "Smith", "postalcode": "37201"},
+                    headers={"X-Requested-With": "XMLHttpRequest", "Referer": redirect_url},
+                    timeout=(10, 15),
+                )
+                logger.info("Posted state-level AgeVerification form.")
+            except Exception as e:
+                logger.warning(f"AgeVerification form post notice: {e}")
+
+        # 2. General AgeConfirmation handshake
+        for confirm_url in [
+            "https://www.adultdvdempire.com/Account/AgeConfirmation",
+            "https://www.adultdvdempire.com/AgeConfirmation",
+        ]:
+            try:
+                resp = self.session.get(
+                    confirm_url,
+                    params={"ageConfirmationClicked": "true"},
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": redirect_url,
+                    },
+                    timeout=(10, 15),
+                )
+                logger.info(f"AgeConfirmation handshake ({confirm_url}): status={resp.status_code}")
+            except Exception as e:
+                logger.warning(f"AgeConfirmation handshake notice at {confirm_url}: {e}")
 
         # Re-seed cookies across all domains
         self._seed_age_cookies()
@@ -236,6 +254,12 @@ class FeedScraper:
                     f"(redirected to {resp.url}). Performing age handshake..."
                 )
                 self._perform_age_handshake(resp.url)
+                if not proxy_attempted:
+                    proxy_candidate = self.fallback_proxy or self._detect_tor_proxy()
+                    if proxy_candidate:
+                        logger.info(f"Switching to proxy after age challenge: {proxy_candidate}")
+                        self._apply_proxy(proxy_candidate)
+                        proxy_attempted = True
                 time.sleep(1)
 
         # All attempts exhausted — return last response with warning
