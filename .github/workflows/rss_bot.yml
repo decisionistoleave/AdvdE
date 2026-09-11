@@ -39,6 +39,23 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Configure network (prefer IPv4)
+        run: |
+          echo 'precedence ::ffff:0:0/96 100' | sudo tee -a /etc/gai.conf
+
+      - name: Setup Tor proxy fallback
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq tor || true
+          sudo systemctl start tor || true
+          for i in $(seq 1 15); do
+            if nc -z 127.0.0.1 9050 2>/dev/null; then
+              echo "Tor SOCKS5 proxy is ready on 127.0.0.1:9050"
+              break
+            fi
+            sleep 1
+          done
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -50,6 +67,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MAX_POSTS_PER_RUN: ${{ vars.MAX_POSTS_PER_RUN || 20 }}
           INITIAL_POST_LIMIT: ${{ vars.INITIAL_POST_LIMIT || 20 }}
+          TOR_PROXY: socks5h://127.0.0.1:9050
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
           ARGS=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then

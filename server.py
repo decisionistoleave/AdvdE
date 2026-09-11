@@ -39,6 +39,9 @@ def _getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
 
 socket.getaddrinfo = _getaddrinfo_ipv4
 
+import urllib3.util.connection
+urllib3.util.connection.HAS_IPV6 = False
+
 import bot
 
 bot.load_dotenv()

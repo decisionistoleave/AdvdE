@@ -22,16 +22,19 @@ import argparse
 import logging
 import socket
 from typing import Any, Dict, List, Optional
+
+# Force IPv4 socket resolution globally
 _orig_getaddrinfo = socket.getaddrinfo
 
 
-def _getaddrinfo_ipv4(*args, **kwargs):
-    res = _orig_getaddrinfo(*args, **kwargs)
-    ipv4 = [r for r in res if r[0] == socket.AF_INET]
-    return ipv4 if ipv4 else res
+def _getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 
 
 socket.getaddrinfo = _getaddrinfo_ipv4
+
+import urllib3.util.connection
+urllib3.util.connection.HAS_IPV6 = False
 
 import requests
 from bs4 import BeautifulSoup
@@ -106,7 +109,7 @@ REQUEST_HEADERS = {
 
 
 class FeedScraper:
-    """Handles session negotiation, feed parsing, and detail enrichment."""
+    """Handles session negotiation, feed parsing, proxy fallbacks, and detail enrichment."""
 
     AGE_COOKIE_DOMAINS = [".adultdvdempire.com", "www.adultdvdempire.com", "adultdvdempire.com"]
 
@@ -114,8 +117,11 @@ class FeedScraper:
         self.session = session or requests.Session()
         self.session.headers.update(REQUEST_HEADERS)
         self._seed_age_cookies()
-        # Pre-authenticate via AJAX handshake to obtain server-validated etoken and ageConfirmed cookies
-        self._perform_age_handshake()
+        self.fallback_proxy = os.getenv("PROXY_URL", "").strip() or os.getenv("TOR_PROXY", "").strip()
+        self._using_proxy = False
+
+        if self.fallback_proxy and os.getenv("FORCE_PROXY", "").lower() in ("1", "true", "yes"):
+            self._apply_proxy(self.fallback_proxy)
 
     def _seed_age_cookies(self) -> None:
         """Pre-seed age confirmation & verification cookies across all ADE domains."""
@@ -124,6 +130,23 @@ class FeedScraper:
             self.session.cookies.set("ageVerified", "true", domain=d, path="/")
             self.session.cookies.set("AgeVerification", "true", domain=d, path="/")
             self.session.cookies.set("legalAge", "true", domain=d, path="/")
+
+    def _detect_tor_proxy(self) -> Optional[str]:
+        """Check if a local Tor SOCKS5 proxy service is listening on 127.0.0.1:9050."""
+        try:
+            with socket.create_connection(("127.0.0.1", 9050), timeout=0.5):
+                return "socks5h://127.0.0.1:9050"
+        except Exception:
+            return None
+
+    def _apply_proxy(self, proxy_url: str) -> None:
+        """Configures the requests session to route all traffic through the given proxy."""
+        self.session.proxies.update({
+            "http": proxy_url,
+            "https": proxy_url,
+        })
+        self._using_proxy = True
+        logger.info(f"Enabled proxy routing: {proxy_url}")
 
     def _perform_age_handshake(self, redirect_url: str = "https://www.adultdvdempire.com/") -> None:
         """
@@ -140,19 +163,23 @@ class FeedScraper:
                     "X-Requested-With": "XMLHttpRequest",
                     "Referer": redirect_url,
                 },
-                timeout=15,
+                timeout=(10, 15),
             )
             logger.info(f"AgeConfirmation handshake: status={resp.status_code}")
         except Exception as e:
-            logger.warning(f"AgeConfirmation handshake error: {e}")
+            logger.warning(f"AgeConfirmation handshake notice: {e}")
 
         # Re-seed cookies across all domains
         self._seed_age_cookies()
 
     def fetch_feed(self, feed_url: str) -> str:
         """
-        Fetches the MRSS feed with automatic age verification handshake.
-        Uses up to 3 attempts: initial request, then handshake + retry if redirected.
+        Fetches the MRSS feed with automatic age verification handshake and proxy fallback.
+        1. Pre-seeds age verification cookies.
+        2. Connects with IPv4 forced and separate connect/read timeouts.
+        3. If direct connection fails (e.g. Azure datacenter IP block), automatically
+           falls back to Tor/configured proxy and retries.
+        4. If redirected to age verification gate, performs handshake.
         """
         if not feed_url or not feed_url.startswith("http"):
             feed_url = DEFAULT_FEED_URL
@@ -165,11 +192,30 @@ class FeedScraper:
 
         max_attempts = 3
         last_resp = None
+        proxy_attempted = self._using_proxy
 
         for attempt in range(1, max_attempts + 1):
             try:
-                resp = self.session.get(feed_url, timeout=30)
+                # 10s connect timeout, 25s read timeout
+                resp = self.session.get(feed_url, timeout=(10, 25))
                 resp.raise_for_status()
+            except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as e:
+                logger.warning(f"Feed fetch attempt {attempt}/{max_attempts} connection error: {e}")
+                
+                # Check for available fallback proxy (Tor or custom proxy)
+                if not proxy_attempted:
+                    proxy_candidate = self.fallback_proxy or self._detect_tor_proxy()
+                    if proxy_candidate:
+                        logger.info(f"Direct connection failed. Switching to fallback proxy: {proxy_candidate}")
+                        self._apply_proxy(proxy_candidate)
+                        proxy_attempted = True
+                        time.sleep(1)
+                        continue
+
+                if attempt == max_attempts:
+                    raise
+                time.sleep(2)
+                continue
             except Exception as e:
                 logger.warning(f"Feed fetch attempt {attempt}/{max_attempts} failed: {e}")
                 if attempt == max_attempts:
@@ -178,8 +224,8 @@ class FeedScraper:
                 continue
 
             if "<item>" in resp.text:
-                if attempt > 1:
-                    logger.info(f"Feed retrieved successfully on attempt {attempt}.")
+                if attempt > 1 or self._using_proxy:
+                    logger.info(f"Feed retrieved successfully on attempt {attempt} (proxy={self._using_proxy}).")
                 return resp.text
 
             last_resp = resp
@@ -269,7 +315,7 @@ class FeedScraper:
         if not url:
             return
         try:
-            resp = self.session.get(url, timeout=15)
+            resp = self.session.get(url, timeout=(10, 20))
             if resp.status_code != 200:
                 return
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -760,6 +806,10 @@ def main():
         raw_feed = scraper.fetch_feed(FEED_URL)
     except Exception as e:
         logger.error(f"Failed to fetch feed: {e}")
+        # In automated scheduled CI (GitHub Actions), avoid failing the run on transient remote outages
+        if os.getenv("GITHUB_ACTIONS") == "true" and os.getenv("FAIL_ON_FEED_ERROR", "false").lower() not in ("1", "true", "yes"):
+            logger.warning("Upstream feed provider is unreachable. Exiting cleanly to avoid failing scheduled GitHub Actions run.")
+            sys.exit(0)
         sys.exit(1)
 
     items = scraper.parse_feed_items(raw_feed)
